@@ -5,17 +5,18 @@ from dataclasses import dataclass, field
 import numpy as np
 from collections import deque
 import random
+import math
 
 
 class DQN(nn.Module):
     def __init__(self):
         super().__init__()
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(5, 512),
+            nn.Linear(5, 256),
             nn.ReLU(),
-            nn.Linear(512, 512),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(512, 1),
+            nn.Linear(256, 1),
         )
 
     def forward(self, x):
@@ -28,6 +29,7 @@ class Transition:
     action: float
     next_state: np.ndarray
     reward: float
+    is_terminal: bool
 
 
 class ReplayMemory:
@@ -51,61 +53,72 @@ def run():
     policy_net = DQN()
     target_net = DQN()
 
-    def to_input(s: np.ndarray, a: np.float32):
-        x = np.concatenate((current_state, [0.0])).astype(np.float32)
+    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.01)
+
+    def to_input(s: np.ndarray, a: float):
+        x = np.concatenate([s, [a]]).astype(np.float32)
         return torch.from_numpy(x)
 
-    memory = ReplayMemory(100)
+    memory = ReplayMemory(256)
 
-    epsilon = 0.1
-    gamma = 0.3
-    batch_size = 8
-    for episode in range(1):
+    gamma = 0.99
+    batch_size = 32
+    for episode in range(500):
+        epsilon = max(0.0, 1.0 - episode / 250)
         current_state = env.reset()
         iteration = 0
-        while iteration < 500:
+        total_reward = 0
+        while True:
             iteration += 1
             # Epsilon greedy selection
             if np.random.rand() > epsilon:
                 with torch.no_grad():
-                    q_set = np.array([policy_net(to_input(current_state, ap)).item() for ap in [0, 1]])
+                    q_set = np.array([policy_net(to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
+                    print(q_set)
                 next_action = np.argmax(q_set)
             else:
                 next_action = np.random.randint(2)
 
             next_state, reward, done, _ = env.step(next_action)
-            next_transition = Transition(current_state, next_action, reward, next_state)
+            total_reward += 1
+            next_transition = Transition(current_state, next_action, next_state, reward, done)
             memory.append(next_transition)
             current_state = next_state
 
             # Optimize q table
             if len(memory) >= batch_size:
-                # loss = (torch.tensor(target) - policy_net(to_input(current_state, next_action))).pow(2).sum()
-                # policy_net.zero_grad()
-                # loss.backward()
-                pass
+                mini_batch = memory.random_batch(batch_size)
+                targets = []
+                inputs = []
+                for transition in mini_batch:
+                    if transition.is_terminal:
+                        target = transition.reward
+                    else:
+                        with torch.no_grad():
+                            next_q_set = [target_net(to_input(transition.next_state, ap)).item() for ap in [0.0, 1.0]]
+                        target = transition.reward + gamma * max(next_q_set)
 
-            # Incorrect, needs to sample memory
-            # next_q_set = [target_net(to_input(next_state, ap)).item() for ap in [0, 1]]
-            # target = reward if done else reward + gamma * max(next_q_set)
+                    inputs.append(to_input(transition.state, transition.action))
+                    targets.append(torch.tensor(target))
+
+                y = torch.stack(targets)
+                x = torch.stack(inputs)
+                policy_net.zero_grad()
+                loss_fn = torch.nn.MSELoss()
+                loss = loss_fn(policy_net(x), y)
+                loss.backward()
+                optimizer.step()
 
             env.render()
 
             if done:
                 break
 
-        target_net.load_state_dict(policy_net.state_dict())
+        print(total_reward)
+        if episode % 1 == 0:
+            target_net.load_state_dict(policy_net.state_dict())
 
     env.close()
 
 
-# run()
-
-def tmp():
-    env = gym.make('CartPole-v0')
-    env.reset()
-
-    for _ in range(10):
-        #    env.render()
-        observation, reward, done, info = env.step(env.action_space.sample())
-    env.close()
+run()
