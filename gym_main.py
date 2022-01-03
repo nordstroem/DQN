@@ -46,30 +46,60 @@ class ReplayMemory:
         return [self.memory[i] for i in indices]
 
 
-def test():
-    pass
-
-
-test()
-
-
 def run():
     env = gym.make('CartPole-v0')
+    policy_net = DQN()
+    target_net = DQN()
 
-    policy_network = DQN()
-    target_network = DQN()
+    def to_input(s: np.ndarray, a: np.float32):
+        x = np.concatenate((current_state, [0.0])).astype(np.float32)
+        return torch.from_numpy(x)
+
     memory = ReplayMemory(100)
 
     epsilon = 0.1
-    for episode in range(50):
-        current_state = None
+    gamma = 0.3
+    batch_size = 8
+    for episode in range(1):
+        current_state = env.reset()
         iteration = 0
         while iteration < 500:
             iteration += 1
-            for i in [0, 1]:
-                a = DQN()
-        target_network.load_state_dict(policy_network.state_dict())
+            # Epsilon greedy selection
+            if np.random.rand() > epsilon:
+                with torch.no_grad():
+                    q_set = np.array([policy_net(to_input(current_state, ap)).item() for ap in [0, 1]])
+                next_action = np.argmax(q_set)
+            else:
+                next_action = np.random.randint(2)
 
+            next_state, reward, done, _ = env.step(next_action)
+            next_transition = Transition(current_state, next_action, reward, next_state)
+            memory.append(next_transition)
+            current_state = next_state
+
+            # Optimize q table
+            if len(memory) >= batch_size:
+                # loss = (torch.tensor(target) - policy_net(to_input(current_state, next_action))).pow(2).sum()
+                # policy_net.zero_grad()
+                # loss.backward()
+                pass
+
+            # Incorrect, needs to sample memory
+            # next_q_set = [target_net(to_input(next_state, ap)).item() for ap in [0, 1]]
+            # target = reward if done else reward + gamma * max(next_q_set)
+
+            env.render()
+
+            if done:
+                break
+
+        target_net.load_state_dict(policy_net.state_dict())
+
+    env.close()
+
+
+# run()
 
 def tmp():
     env = gym.make('CartPole-v0')
