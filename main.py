@@ -1,7 +1,7 @@
 import gym
 import torch
 import torch.nn as nn
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import numpy as np
 from collections import deque
 import random
@@ -74,12 +74,11 @@ def run():
     step_counter = 0
     total_rewards = []
     for episode in range(5000):
-        epsilon = max(0.05, 0.8 * (1 - episode / 500))
         current_state = env.reset()
         iteration = 0
         total_reward = 0
-        # epsilon = 0.05 + (0.9 - 0.05) * math.exp(-1. * episode / 200)
-        while iteration < 1000:
+        epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 200)
+        while iteration < 500:
             iteration += 1
             # Epsilon greedy selection
             if np.random.rand() > epsilon:
@@ -96,11 +95,14 @@ def run():
             memory.append(next_transition)
             current_state = next_state
             moving_reward_average = np.mean(total_rewards[:-10]) if len(total_rewards) > 10 else 0.0
-            if step_counter % 1000 == 0 and step_counter > 0:
-                print(episode, moving_reward_average, epsilon)
-                target_net.load_state_dict(policy_net.state_dict())
 
-            if moving_reward_average > 90:
+            if step_counter % 1000 == 0 and step_counter > 0:
+                print(f"episode: {episode}, avg. reward: {moving_reward_average}, epsilon: {epsilon}")
+                target_net.load_state_dict(policy_net.state_dict())
+                # Reinitializing the optimizer here seems to give slightly better convergence
+                optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.001)
+
+            if moving_reward_average > 140:
                 env.render()
 
             # Optimize q table
@@ -136,4 +138,5 @@ def run():
     env.close()
 
 
-run()
+if __name__ == "__main__":
+    run()
