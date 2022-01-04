@@ -61,7 +61,7 @@ def run():
     policy_net.apply(init_weights)
     target_net.apply(init_weights)
 
-    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.0005)
+    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.001)
 
     def to_input(s: np.ndarray, a: float):
         x = np.concatenate([s, [a]]).astype(np.float32)
@@ -69,17 +69,17 @@ def run():
 
     memory = ReplayMemory(5000)
 
-    gamma = 0.999
+    gamma = 0.999999
     batch_size = 64
     step_counter = 0
     total_rewards = []
     for episode in range(5000):
-        epsilon = max(0.1, 0.8 * (1 - episode / 500))
+        epsilon = max(0.05, 0.8 * (1 - episode / 500))
         current_state = env.reset()
         iteration = 0
         total_reward = 0
         # epsilon = 0.05 + (0.9 - 0.05) * math.exp(-1. * episode / 200)
-        while iteration < 500:
+        while iteration < 1000:
             iteration += 1
             # Epsilon greedy selection
             if np.random.rand() > epsilon:
@@ -100,7 +100,7 @@ def run():
                 print(episode, moving_reward_average, epsilon)
                 target_net.load_state_dict(policy_net.state_dict())
 
-            if moving_reward_average > 60:
+            if moving_reward_average > 90:
                 env.render()
 
             # Optimize q table
@@ -124,7 +124,7 @@ def run():
                     y = torch.stack(targets)
                     x = torch.stack(inputs)
                     policy_net.zero_grad()
-                    loss_fn = torch.nn.HuberLoss()
+                    loss_fn = torch.nn.MSELoss()
                     loss = loss_fn(policy_net(x), y.unsqueeze(1))
                     loss.backward()
                     optimizer.step()
