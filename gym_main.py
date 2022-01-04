@@ -12,11 +12,11 @@ class DQN(nn.Module):
     def __init__(self):
         super().__init__()
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(5, 256),
+            nn.Linear(5, 32),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(32, 64),
             nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.Linear(64, 1),
         )
 
     def forward(self, x):
@@ -53,28 +53,28 @@ def run():
     policy_net = DQN()
     target_net = DQN()
 
-    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.01)
+    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.001)
 
     def to_input(s: np.ndarray, a: float):
         x = np.concatenate([s, [a]]).astype(np.float32)
         return torch.from_numpy(x)
 
-    memory = ReplayMemory(256)
+    memory = ReplayMemory(10000)
 
-    gamma = 0.99
-    batch_size = 32
-    for episode in range(500):
-        epsilon = max(0.0, 1.0 - episode / 250)
+    gamma = 0.999
+    batch_size = 64
+    total_rewards = []
+    for episode in range(5000):
+        epsilon = max(0.05, 0.6 * (1 - episode / 300))
         current_state = env.reset()
         iteration = 0
         total_reward = 0
-        while True:
+        while iteration < 500:
             iteration += 1
             # Epsilon greedy selection
             if np.random.rand() > epsilon:
                 with torch.no_grad():
                     q_set = np.array([policy_net(to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
-                    print(q_set)
                 next_action = np.argmax(q_set)
             else:
                 next_action = np.random.randint(2)
@@ -104,18 +104,19 @@ def run():
                 y = torch.stack(targets)
                 x = torch.stack(inputs)
                 policy_net.zero_grad()
-                loss_fn = torch.nn.MSELoss()
-                loss = loss_fn(policy_net(x), y)
+                loss_fn = torch.nn.SmoothL1Loss()
+                loss = loss_fn(policy_net(x), y.unsqueeze(1))
                 loss.backward()
                 optimizer.step()
 
-            env.render()
+            if episode > 250:
+                env.render()
 
             if done:
                 break
-
-        print(total_reward)
-        if episode % 1 == 0:
+        total_rewards.append(total_reward)
+        if episode % 10 == 0:
+            print(episode, np.mean(total_rewards[:-10]) if len(total_rewards) > 10 else 0.0, epsilon)
             target_net.load_state_dict(policy_net.state_dict())
 
     env.close()
