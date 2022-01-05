@@ -130,3 +130,5 @@ dmypy.json
 
 
 .idea/
+
+transfer_learning/data/
