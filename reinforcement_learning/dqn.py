@@ -48,95 +48,89 @@ class ReplayMemory:
         return [self.memory[i] for i in indices]
 
 
-def run():
-    env = gym.make('CartPole-v0')
-    policy_net = DQN()
-    target_net = DQN()
+class Learner:
+    def __init__(self):
+        self.env = gym.make('CartPole-v1')
+        self.policy_net = DQN()
+        self.target_net = DQN()
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
+        self.memory = ReplayMemory(5000)
 
-    def init_weights(m):
-        if isinstance(m, torch.nn.Linear):
-            torch.nn.init.kaiming_uniform_(m.weight)
-            torch.nn.init.zeros_(m.bias)
+    def __del__(self):
+        self.env.close()
 
-    policy_net.apply(init_weights)
-    target_net.apply(init_weights)
+    def learn(self):
+        def to_input(s: np.ndarray, a: float):
+            x = np.concatenate([s, [a]]).astype(np.float32)
+            return torch.from_numpy(x)
 
-    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.001)
+        gamma = 0.999999
+        batch_size = 64
+        step_counter = 0
+        total_rewards = []
+        for episode in range(5000):
+            current_state = self.env.reset()
+            iteration = 0
+            total_reward = 0
+            epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 200)
+            while iteration < 500:
+                iteration += 1
+                # Epsilon greedy selection
+                if np.random.rand() > epsilon:
+                    with torch.no_grad():
+                        q_set = np.array([self.policy_net(to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
+                    next_action = np.argmax(q_set)
+                else:
+                    next_action = np.random.randint(2)
 
-    def to_input(s: np.ndarray, a: float):
-        x = np.concatenate([s, [a]]).astype(np.float32)
-        return torch.from_numpy(x)
+                next_state, reward, done, _ = self.env.step(next_action)
+                step_counter += 1
+                total_reward += 1
+                next_transition = Transition(current_state, next_action, next_state, reward, done)
+                self.memory.append(next_transition)
+                current_state = next_state
+                moving_reward_average = np.mean(total_rewards[:-10]) if len(total_rewards) > 10 else 0.0
 
-    memory = ReplayMemory(5000)
+                if step_counter % 1000 == 0 and step_counter > 0:
+                    print(f"episode: {episode}, avg. reward: {moving_reward_average}, epsilon: {epsilon}")
+                    self.target_net.load_state_dict(self.policy_net.state_dict())
+                    # Reinitializing the optimizer here seems to give slightly better convergence
+                    optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
 
-    gamma = 0.999999
-    batch_size = 64
-    step_counter = 0
-    total_rewards = []
-    for episode in range(5000):
-        current_state = env.reset()
-        iteration = 0
-        total_reward = 0
-        epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 200)
-        while iteration < 500:
-            iteration += 1
-            # Epsilon greedy selection
-            if np.random.rand() > epsilon:
-                with torch.no_grad():
-                    q_set = np.array([policy_net(to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
-                next_action = np.argmax(q_set)
-            else:
-                next_action = np.random.randint(2)
+                if moving_reward_average > 140:
+                    self.env.render()
 
-            next_state, reward, done, _ = env.step(next_action)
-            step_counter += 1
-            total_reward += 1
-            next_transition = Transition(current_state, next_action, next_state, reward, done)
-            memory.append(next_transition)
-            current_state = next_state
-            moving_reward_average = np.mean(total_rewards[:-10]) if len(total_rewards) > 10 else 0.0
+                # Optimize q table
+                if step_counter % 4 == 0:
+                    if len(self.memory) >= batch_size:
+                        mini_batch = self.memory.random_batch(batch_size)
+                        targets = []
+                        inputs = []
+                        for transition in mini_batch:
+                            if transition.is_terminal:
+                                target = transition.reward
+                            else:
+                                with torch.no_grad():
+                                    next_q_set = [self.target_net(to_input(transition.next_state, ap)).item() for ap in
+                                                  [0.0, 1.0]]
+                                target = transition.reward + gamma * max(next_q_set)
 
-            if step_counter % 1000 == 0 and step_counter > 0:
-                print(f"episode: {episode}, avg. reward: {moving_reward_average}, epsilon: {epsilon}")
-                target_net.load_state_dict(policy_net.state_dict())
-                # Reinitializing the optimizer here seems to give slightly better convergence
-                optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.001)
+                            inputs.append(to_input(transition.state, transition.action))
+                            targets.append(torch.tensor(target))
 
-            if moving_reward_average > 140:
-                env.render()
+                        y = torch.stack(targets)
+                        x = torch.stack(inputs)
+                        self.policy_net.zero_grad()
+                        loss_fn = torch.nn.MSELoss()
+                        loss = loss_fn(self.policy_net(x), y.unsqueeze(1))
+                        loss.backward()
+                        self.optimizer.step()
 
-            # Optimize q table
-            if step_counter % 4 == 0:
-                if len(memory) >= batch_size:
-                    mini_batch = memory.random_batch(batch_size)
-                    targets = []
-                    inputs = []
-                    for transition in mini_batch:
-                        if transition.is_terminal:
-                            target = transition.reward
-                        else:
-                            with torch.no_grad():
-                                next_q_set = [target_net(to_input(transition.next_state, ap)).item() for ap in
-                                              [0.0, 1.0]]
-                            target = transition.reward + gamma * max(next_q_set)
-
-                        inputs.append(to_input(transition.state, transition.action))
-                        targets.append(torch.tensor(target))
-
-                    y = torch.stack(targets)
-                    x = torch.stack(inputs)
-                    policy_net.zero_grad()
-                    loss_fn = torch.nn.MSELoss()
-                    loss = loss_fn(policy_net(x), y.unsqueeze(1))
-                    loss.backward()
-                    optimizer.step()
-
-            if done:
-                break
-        total_rewards.append(total_reward)
-
-    env.close()
+                if done:
+                    break
+            total_rewards.append(total_reward)
 
 
 if __name__ == "__main__":
-    run()
+    learner = Learner()
+    learner.learn()
