@@ -1,35 +1,34 @@
 import gym
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
 import numpy as np
 from collections import deque
 import random
 import math
+from typing import NamedTuple, Any
 
 
 class DQN(nn.Module):
-    def __init__(self):
+    def __init__(self, num_features):
         super().__init__()
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(5, 32),
+            nn.Linear(num_features, 32),
             nn.ReLU(),
             nn.Linear(32, 64),
             nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Linear(64, 1)
         )
 
     def forward(self, x):
         return self.linear_relu_stack(x)
 
 
-@dataclass()
-class Transition:
-    state: np.ndarray
-    action: float
-    next_state: np.ndarray
-    reward: float
-    is_terminal: bool
+class Transition(NamedTuple):
+    state: Any
+    action: Any
+    next_state: Any
+    reward: Any
+    is_terminal: Any
 
 
 class ReplayMemory:
@@ -45,40 +44,59 @@ class ReplayMemory:
     def random_batch(self, batch_size):
         assert batch_size <= len(self.memory)
         indices = random.sample(range(0, len(self.memory)), batch_size)
-        return [self.memory[i] for i in indices]
+        batches = [self.memory[i] for i in indices]
+
+        # Convert the list of transitions to a transition of tensors
+        def to_tensor(array):
+            dtype = bool if array.dtype == bool else torch.float32
+            return torch.tensor(array, dtype=dtype)
+
+        return Transition(*(to_tensor(np.array(i)) for i in zip(*batches)))
 
 
 class Learner:
     def __init__(self):
-        self.env = gym.make('CartPole-v1')
-        self.policy_net = DQN()
-        self.target_net = DQN()
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
+        self.env = gym.make('CartPole-v0')
+        self.num_features = 5
+        self.policy_net = DQN(self.num_features)
+        self.target_net = DQN(self.num_features)
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.002)
         self.memory = ReplayMemory(5000)
+        self.BATCH_SIZE = 64
+        self.MAX_EPISODES = 5000
+        self.GAMMA = 0.9999999
+
+        def init_weights(m):
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.kaiming_uniform_(m.weight)
+                torch.nn.init.zeros_(m.bias)
+
+        self.policy_net.apply(init_weights)
+        self.target_net.apply(init_weights)
 
     def __del__(self):
         self.env.close()
 
-    def learn(self):
-        def to_input(s: np.ndarray, a: float):
-            x = np.concatenate([s, [a]]).astype(np.float32)
-            return torch.from_numpy(x)
+    @staticmethod
+    def to_input(s: np.ndarray, a: float):
+        x = np.concatenate([s, [a]]).astype(np.float32)
+        return torch.from_numpy(x)
 
-        gamma = 0.999999
-        batch_size = 64
+    def learn(self):
         step_counter = 0
         total_rewards = []
-        for episode in range(5000):
+        for episode in range(self.MAX_EPISODES):
             current_state = self.env.reset()
             iteration = 0
             total_reward = 0
-            epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 200)
+            epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 500)
             while iteration < 500:
                 iteration += 1
                 # Epsilon greedy selection
                 if np.random.rand() > epsilon:
                     with torch.no_grad():
-                        q_set = np.array([self.policy_net(to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
+                        q_set = np.array(
+                            [self.policy_net(self.to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
                     next_action = np.argmax(q_set)
                 else:
                     next_action = np.random.randint(2)
@@ -95,40 +113,47 @@ class Learner:
                     print(f"episode: {episode}, avg. reward: {moving_reward_average}, epsilon: {epsilon}")
                     self.target_net.load_state_dict(self.policy_net.state_dict())
                     # Reinitializing the optimizer here seems to give slightly better convergence
-                    optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
+                    self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
 
-                if moving_reward_average > 140:
+                if moving_reward_average > 150:
                     self.env.render()
 
                 # Optimize q table
                 if step_counter % 4 == 0:
-                    if len(self.memory) >= batch_size:
-                        mini_batch = self.memory.random_batch(batch_size)
-                        targets = []
-                        inputs = []
-                        for transition in mini_batch:
-                            if transition.is_terminal:
-                                target = transition.reward
-                            else:
-                                with torch.no_grad():
-                                    next_q_set = [self.target_net(to_input(transition.next_state, ap)).item() for ap in
-                                                  [0.0, 1.0]]
-                                target = transition.reward + gamma * max(next_q_set)
-
-                            inputs.append(to_input(transition.state, transition.action))
-                            targets.append(torch.tensor(target))
-
-                        y = torch.stack(targets)
-                        x = torch.stack(inputs)
-                        self.policy_net.zero_grad()
-                        loss_fn = torch.nn.MSELoss()
-                        loss = loss_fn(self.policy_net(x), y.unsqueeze(1))
-                        loss.backward()
-                        self.optimizer.step()
+                    self.optimize_step()
 
                 if done:
                     break
             total_rewards.append(total_reward)
+
+    def optimize_step(self):
+        if len(self.memory) >= self.BATCH_SIZE:
+            transition = self.memory.random_batch(self.BATCH_SIZE)
+
+            left_a = torch.zeros(self.BATCH_SIZE).unsqueeze(1)
+            right_a = torch.ones(self.BATCH_SIZE).unsqueeze(1)
+
+            left_x = torch.cat((transition.next_state, left_a), dim=1)
+            right_x = torch.cat((transition.next_state, right_a), dim=1)
+
+            x = torch.zeros((self.BATCH_SIZE * 2, self.num_features))
+            x[::2, :] = left_x
+            x[1::2, :] = right_x
+
+            with torch.no_grad():
+                y = self.target_net(x)  # Optimize with skipping terminal states?
+            q_values, _ = y.view(self.BATCH_SIZE, 2).max(dim=1)
+
+            targets = transition.reward
+            targets[~transition.is_terminal] += self.GAMMA * q_values[~transition.is_terminal]
+
+            x = torch.cat((transition.state, transition.action.view(-1, 1)), dim=1)
+
+            loss_fn = torch.nn.MSELoss()
+            loss = loss_fn(self.policy_net(x), targets.view(-1, 1))
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
 
 if __name__ == "__main__":
