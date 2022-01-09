@@ -6,6 +6,8 @@ from collections import deque
 import random
 import math
 from typing import NamedTuple, Any
+import cProfile
+import pstats
 
 
 class DQN(nn.Module):
@@ -89,23 +91,15 @@ class Learner:
             current_state = self.env.reset()
             iteration = 0
             total_reward = 0
-            epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 500)
+            epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 200)
             while iteration < 500:
                 iteration += 1
-                # Epsilon greedy selection
-                if np.random.rand() > epsilon:
-                    with torch.no_grad():
-                        q_set = np.array(
-                            [self.policy_net(self.to_input(current_state, ap)).item() for ap in [0.0, 1.0]])
-                    next_action = np.argmax(q_set)
-                else:
-                    next_action = np.random.randint(2)
-
+                next_action = self.get_action(epsilon, current_state)
                 next_state, reward, done, _ = self.env.step(next_action)
                 step_counter += 1
-                total_reward += 1
-                next_transition = Transition(current_state, next_action, next_state, reward, done)
-                self.memory.append(next_transition)
+                total_reward += reward
+
+                self.memory.append(Transition(current_state, next_action, next_state, reward, done))
                 current_state = next_state
                 moving_reward_average = np.mean(total_rewards[:-10]) if len(total_rewards) > 10 else 0.0
 
@@ -113,7 +107,7 @@ class Learner:
                     print(f"episode: {episode}, avg. reward: {moving_reward_average}, epsilon: {epsilon}")
                     self.target_net.load_state_dict(self.policy_net.state_dict())
                     # Reinitializing the optimizer here seems to give slightly better convergence
-                    self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
+                    # self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
 
                 if moving_reward_average > 150:
                     self.env.render()
@@ -124,7 +118,24 @@ class Learner:
 
                 if done:
                     break
+
             total_rewards.append(total_reward)
+
+    def get_action(self, epsilon, current_state):
+        # Epsilon greedy selection
+        if np.random.rand() > epsilon:
+            with torch.no_grad():
+                x = torch.tensor(current_state).unsqueeze(0)
+                x = x.repeat((2, 1))
+                a = torch.tensor([0, 1]).unsqueeze(1)
+                x = torch.cat((x, a), 1)
+                y = self.policy_net(x)
+                _, next_action = torch.max(y.view(-1), dim=0)
+                next_action = next_action.item()
+        else:
+            next_action = np.random.randint(2)
+
+        return next_action
 
     def optimize_step(self):
         if len(self.memory) >= self.BATCH_SIZE:
@@ -158,4 +169,9 @@ class Learner:
 
 if __name__ == "__main__":
     learner = Learner()
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     learner.learn()
+    # profiler.disable()
+    # stats = pstats.Stats(profiler).sort_stats('cumtime')
+    # stats.print_stats()

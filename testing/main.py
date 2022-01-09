@@ -25,14 +25,14 @@ def optimize_step_input():
 
     print(values, indices)
 
-
-# optimize_step_input()
-
-@dataclass()
-class Transition:
-    state: float
-    action: float
+    # optimize_step_input()
 
 
-t = Transition(1.5, 0.5)
-print(*dataclasses.astuple(t))
+x = torch.arange(4).unsqueeze(0)
+x = x.repeat((2, 1))
+a = torch.tensor([0, 1]).unsqueeze(1)
+r = torch.cat((x, a), 1)
+
+print("x: ", x)
+print("a: ", a)
+print("r: ", r)
