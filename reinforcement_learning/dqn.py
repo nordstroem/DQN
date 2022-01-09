@@ -6,17 +6,17 @@ from collections import deque
 import random
 import math
 from typing import NamedTuple, Any
-import cProfile
-import pstats
+
+device = torch.device("cpu")
 
 
 class DQN(nn.Module):
     def __init__(self, num_features):
         super().__init__()
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(num_features, 32),
+            nn.Linear(num_features, 64),
             nn.ReLU(),
-            nn.Linear(32, 64),
+            nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, 1)
         )
@@ -51,20 +51,20 @@ class ReplayMemory:
         # Convert the list of transitions to a transition of tensors
         def to_tensor(array):
             dtype = bool if array.dtype == bool else torch.float32
-            return torch.tensor(array, dtype=dtype)
+            return torch.tensor(array, dtype=dtype, device=device)
 
         return Transition(*(to_tensor(np.array(i)) for i in zip(*batches)))
 
 
 class Learner:
     def __init__(self):
-        self.env = gym.make('CartPole-v0')
+        self.env = gym.make('CartPole-v1')
         self.num_features = 5
-        self.policy_net = DQN(self.num_features)
-        self.target_net = DQN(self.num_features)
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.002)
+        self.policy_net = DQN(self.num_features).to(device)
+        self.target_net = DQN(self.num_features).to(device)
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
         self.memory = ReplayMemory(5000)
-        self.BATCH_SIZE = 64
+        self.BATCH_SIZE = 32
         self.MAX_EPISODES = 5000
         self.GAMMA = 0.9999999
 
@@ -79,11 +79,6 @@ class Learner:
     def __del__(self):
         self.env.close()
 
-    @staticmethod
-    def to_input(s: np.ndarray, a: float):
-        x = np.concatenate([s, [a]]).astype(np.float32)
-        return torch.from_numpy(x)
-
     def learn(self):
         step_counter = 0
         total_rewards = []
@@ -91,8 +86,8 @@ class Learner:
             current_state = self.env.reset()
             iteration = 0
             total_reward = 0
-            epsilon = 0.08 + (0.9 - 0.08) * math.exp(-1. * episode / 200)
-            while iteration < 500:
+            epsilon = 0.05 + (0.9 - 0.05) * math.exp(-1. * episode / 200)
+            while iteration < 1000:
                 iteration += 1
                 next_action = self.get_action(epsilon, current_state)
                 next_state, reward, done, _ = self.env.step(next_action)
@@ -101,19 +96,19 @@ class Learner:
 
                 self.memory.append(Transition(current_state, next_action, next_state, reward, done))
                 current_state = next_state
-                moving_reward_average = np.mean(total_rewards[:-10]) if len(total_rewards) > 10 else 0.0
+                moving_reward_average = np.mean(total_rewards[-10:]) if len(total_rewards) > 10 else 0.0
 
                 if step_counter % 1000 == 0 and step_counter > 0:
-                    print(f"episode: {episode}, avg. reward: {moving_reward_average}, epsilon: {epsilon}")
+                    print(
+                        f"episode: {episode}, avg. reward: {moving_reward_average}, "
+                        f"max. reward: {np.max(total_rewards[-10:])} epsilon: {epsilon}")
                     self.target_net.load_state_dict(self.policy_net.state_dict())
-                    # Reinitializing the optimizer here seems to give slightly better convergence
-                    # self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=0.001)
 
-                if moving_reward_average > 150:
+                if moving_reward_average > 300:
                     self.env.render()
 
                 # Optimize q table
-                if step_counter % 4 == 0:
+                if step_counter % 3 == 0:
                     self.optimize_step()
 
                 if done:
@@ -124,14 +119,14 @@ class Learner:
     def get_action(self, epsilon, current_state):
         # Epsilon greedy selection
         if np.random.rand() > epsilon:
+            x = torch.tensor(current_state, device=device).unsqueeze(0)
+            x = x.repeat((2, 1))
+            a = torch.tensor([0, 1], device=device).unsqueeze(1)
+            x = torch.cat((x, a), 1)
             with torch.no_grad():
-                x = torch.tensor(current_state).unsqueeze(0)
-                x = x.repeat((2, 1))
-                a = torch.tensor([0, 1]).unsqueeze(1)
-                x = torch.cat((x, a), 1)
                 y = self.policy_net(x)
-                _, next_action = torch.max(y.view(-1), dim=0)
-                next_action = next_action.item()
+            _, next_action = torch.max(y.view(-1), dim=0)
+            next_action = next_action.item()
         else:
             next_action = np.random.randint(2)
 
@@ -141,13 +136,13 @@ class Learner:
         if len(self.memory) >= self.BATCH_SIZE:
             transition = self.memory.random_batch(self.BATCH_SIZE)
 
-            left_a = torch.zeros(self.BATCH_SIZE).unsqueeze(1)
-            right_a = torch.ones(self.BATCH_SIZE).unsqueeze(1)
+            left_a = torch.zeros(self.BATCH_SIZE, device=device).unsqueeze(1)
+            right_a = torch.ones(self.BATCH_SIZE, device=device).unsqueeze(1)
 
             left_x = torch.cat((transition.next_state, left_a), dim=1)
             right_x = torch.cat((transition.next_state, right_a), dim=1)
 
-            x = torch.zeros((self.BATCH_SIZE * 2, self.num_features))
+            x = torch.zeros((self.BATCH_SIZE * 2, self.num_features), device=device)
             x[::2, :] = left_x
             x[1::2, :] = right_x
 
@@ -169,9 +164,4 @@ class Learner:
 
 if __name__ == "__main__":
     learner = Learner()
-    # profiler = cProfile.Profile()
-    # profiler.enable()
     learner.learn()
-    # profiler.disable()
-    # stats = pstats.Stats(profiler).sort_stats('cumtime')
-    # stats.print_stats()
